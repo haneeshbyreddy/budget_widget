@@ -621,23 +621,23 @@ const AI_WAIT = 45 // seconds a stencil notification waits for the AI before goi
 // when there's nothing for the AI to read, the Shortcut still runs Use Model — give it a question it can't mistake
 const NOTHING = "Reply with a dictionary: id: none, is_transaction: false, amount: 0."
 
+// the instructions the AI follows. In the one-run Shortcut you type these into Use Model yourself
+// (they're in scriptable/prompt.txt); in the two-run Shortcut left. writes them, plus an id.
+const AI_RULES = [
+  "You read one text message for a personal budget app in India. Answer with a dictionary that has exactly these keys:",
+  "is_transaction: true only if money has already moved into or out of the reader's own bank account, card or wallet. false for OTPs, offers, reminders, anything that \"will be\" debited, payment requests, failed payments, autopay set-up, and messages from people.",
+  "direction: \"out\" if money left the reader (debited, sent, spent, paid, withdrawn). \"in\" if money arrived (credited, received, refunded). If the reader's account was debited and someone else was credited, it is \"out\".",
+  "amount: the amount that moved, as a number. Never the balance or the credit limit.",
+  "counterparty: the shop or person on the other side, or \"\".",
+  "account_last4: the last 4 digits of the reader's account or card, or \"\".",
+  "credit_card: true if it happened on a credit card, otherwise false.",
+  "kind: one of purchase, atm, card_bill, refund, salary, autopay, other. card_bill means paying a credit card bill from a bank account.",
+  "balance_after: the available balance after it, as a number, or \"\".",
+  "reference: the UPI or reference number, or \"\".",
+]
+
 function aiPrompt(id, sms) {
-  return [
-    "You read one text message for a personal budget app in India. Answer with a dictionary that has exactly these keys:",
-    `id: copy exactly: ${id}`,
-    "is_transaction: true only if money has already moved into or out of the reader's own bank account, card or wallet. false for OTPs, offers, reminders, anything that \"will be\" debited, payment requests, failed payments, autopay set-up, and messages from people.",
-    "direction: \"out\" if money left the reader (debited, sent, spent, paid, withdrawn). \"in\" if money arrived (credited, received, refunded). If the reader's account was debited and someone else was credited, it is \"out\".",
-    "amount: the amount that moved, as a number. Never the balance or the credit limit.",
-    "counterparty: the shop or person on the other side, or \"\".",
-    "account_last4: the last 4 digits of the reader's account or card, or \"\".",
-    "credit_card: true if it happened on a credit card, otherwise false.",
-    "kind: one of purchase, atm, card_bill, refund, salary, autopay, other. card_bill means paying a credit card bill from a bank account.",
-    "balance_after: the available balance after it, as a number, or \"\".",
-    "reference: the UPI or reference number, or \"\".",
-    "",
-    "Message:",
-    sms,
-  ].join("\n")
+  return [AI_RULES[0], `id: copy exactly: ${id}`].concat(AI_RULES.slice(1), ["", "Message:", sms]).join("\n")
 }
 
 // the AI's answer, as a dictionary or as text holding JSON → a tidy reading (null if it isn't one)
@@ -662,6 +662,7 @@ function readAi(v) {
     last4: s(k.accountlast4).replace(/\D/g, "").slice(-4), card: yes(k.creditcard),
     kind: s(k.kind).toLowerCase().replace(/[\s-]+/g, "_"), bal: num(k.balanceafter),
     ref: s(k.reference).replace(/[^a-z0-9]/gi, "").toLowerCase(),
+    sms: inputText(k.message !== undefined ? k.message : k.sms !== undefined ? k.sms : k.shortcutinput),
   }
 }
 
@@ -724,27 +725,23 @@ function noteSeen(S, seen, result) {
   try { writeFile(S, "last-seen.json", JSON.stringify(seen)) } catch (e) {}
 }
 
-async function capture(param) {
-  const now = new Date()
-  const S = store()
-  const ai = readAi(param)
-  if (ai) return applyAi(S, ai, now)
-  const text = inputText(param)
-  // privacy: only the time, type and length of a message are noted — never its words
-  const seen = { at: iso(now), type: Array.isArray(param) ? "list" : typeof param, chars: text.length, result: "" }
-  if (!MONEY_RE.test(text)) {
-    await dropStalePending(S, now)
-    noteSeen(S, seen, "ignored — no amount in it")
-    return NOTHING
-  }
+// the stencil's first look: saves its own reading as a backup, and notes what the AI is asked about
+// (oneRun: the Shortcut already has the AI's answer, so nothing is held for later)
+async function firstLook(S, text, now, oneRun) {
+  if (!MONEY_RE.test(text)) return { done: "ignored — no amount in it" }
   const db = await load(S)
   const p = parseSms(text, now)
-  const later = aiActive(db.settings, now)
+  const later = !oneRun && aiActive(db.settings, now)
+  const tell = async (title, body, id) => {
+    if (oneRun || !db.settings.notify) return ""
+    await notify(title, body, later ? "left-" + id : null)
+    return later ? "later" : "now"
+  }
   const pend = { id: newId(), at: iso(now), sms: text, rowId: "", told: "" }
   let result = "asked the AI · stencil: " + (p.ok ? "a payment" : p.why)
   if (p.ok) {
     const row = buildRow(p, db, now, "sms")
-    if (isDup(row, db.rows)) { noteSeen(S, seen, "already had this one"); return NOTHING }
+    if (isDup(row, db.rows)) return { done: "already had this one" }
     row.reader = "rules"
     db.rows.push(row)
     pairTransfer(db.rows, row)
@@ -752,35 +749,60 @@ async function capture(param) {
     saveRows(db)
     pend.rowId = row.id
     const msg = describeCapture(row, compute(db.rows, db.settings, now))
-    if (db.settings.notify && msg.notify) { await notify(msg.title, msg.body, later ? "left-" + row.id : null); pend.told = later ? "later" : "now" }
+    if (msg.notify) pend.told = await tell(msg.title, msg.body, row.id)
     result = msg.title + " · asked the AI"
   } else if (p.why === "review") {
-    if (db.rows.some(r => r.kind === "review" && r.raw === p.raw)) { noteSeen(S, seen, "already had this one"); return NOTHING }
+    if (db.rows.some(r => r.kind === "review" && r.raw === p.raw)) return { done: "already had this one" }
     const row = reviewRow(p, now)
     row.reader = "rules"
     db.rows.push(row)
     saveRows(db)
     pend.rowId = row.id
-    if (db.settings.notify) { await notify("a bank SMS needs a look", "left. couldn't read it. open left. › recent", later ? "left-" + row.id : null); pend.told = later ? "later" : "now" }
+    pend.told = await tell("a bank SMS needs a look", "left. couldn't read it. open left. › recent", row.id)
   }
-  writeFile(S, "pending.json", JSON.stringify(pend))
-  noteSeen(S, seen, result)
-  return aiPrompt(pend.id, text)
+  return { pend, result }
 }
 
-async function applyAi(S, ai, now) {
-  const seen = { at: iso(now), type: "AI answer", chars: 0, result: "" }
-  const pend = await readPending(S)
+async function capture(param) {
+  const now = new Date()
+  const S = store()
+  const ai = readAi(param)
+  // one run: the Shortcut tucked the original text into the AI's answer (key "message")
+  if (ai && ai.sms) {
+    const seen = { at: iso(now), type: "AI answer + message", chars: ai.sms.length, result: "" }
+    const f = await firstLook(S, ai.sms, now, true)
+    if (f.done) { noteSeen(S, seen, f.done); return "left.: " + f.done }
+    return applyAi(S, ai, now, f.pend)
+  }
+  if (ai) return applyAi(S, ai, now)
+  // two runs: a text message arrives first, the AI's answer comes in a second run
+  const text = inputText(param)
+  // privacy: only the time, type and length of a message are noted — never its words
+  const seen = { at: iso(now), type: Array.isArray(param) ? "list" : typeof param, chars: text.length, result: "" }
+  const f = await firstLook(S, text, now, false)
+  if (f.done) {
+    if (f.done.startsWith("ignored")) await dropStalePending(S, now)
+    noteSeen(S, seen, f.done)
+    return NOTHING
+  }
+  writeFile(S, "pending.json", JSON.stringify(f.pend))
+  noteSeen(S, seen, f.result)
+  return aiPrompt(f.pend.id, text)
+}
+
+async function applyAi(S, ai, now, given) {
+  const seen = { at: iso(now), type: given ? "AI answer + message" : "AI answer", chars: given ? String(given.sms).length : 0, result: "" }
+  const pend = given || await readPending(S)
   // the answer must belong to the message waiting for it (or carry no id and arrive within 5 minutes)
   const norm = s => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "")
   const fresh = pend && now - new Date(pend.at) < 2 * 60 * 1000
   const inSms = pend && ai.amount > 0 && (String(pend.sms).match(/\d[\d,]*(?:\.\d+)?/g) || []).map(money).some(n => Math.abs(n - ai.amount) < 0.005)
-  const mine = pend && (ai.id ? norm(pend.id).length > 0 && norm(ai.id).includes(norm(pend.id)) : fresh && inSms)
+  const mine = given || (pend && (ai.id ? norm(pend.id).length > 0 && norm(ai.id).includes(norm(pend.id)) : fresh && inSms))
   if (!mine) {
     noteSeen(S, seen, "an AI answer came with no message waiting")
     return "left.: nothing waiting for the AI"
   }
-  dropPending(S)
+  if (!given) dropPending(S)
   const db = await load(S)
   db.settings.aiSeen = iso(now)
   const sms = pend.sms
@@ -1681,7 +1703,7 @@ async function main() {
 }
 
 if (typeof __LEFT_TEST__ !== "undefined" && __LEFT_TEST__) {
-  __LEFT_TEST__.exports = { parseSms, compute, cycleFor, buildRow, isDup, pairTransfer, slotFor, toCsv, fromCsv, group, inr, compact, balanceAt, anchorRow, readAi, aiTrusted, aiPrompt, MONEY_RE }
+  __LEFT_TEST__.exports = { parseSms, compute, cycleFor, buildRow, isDup, pairTransfer, slotFor, toCsv, fromCsv, group, inr, compact, balanceAt, anchorRow, readAi, aiTrusted, aiPrompt, MONEY_RE, AI_RULES }
 } else {
   await main()
   Script.complete()
