@@ -607,9 +607,10 @@ async function unnotify(id) { try { await Notification.removePending([id]) } cat
 
 // ─── capture: Shortcuts hands us a text message, then the AI's answer ─
 //
-// call 1  a text message arrives. If it mentions money (₹, Rs, INR — or "debited"/"credited"
-//         with a number, which is how SBI writes it), the stencil reads it straight away and
-//         we hand the Shortcut a question for Apple's on-device AI. Anything else gets "skip".
+// call 1  a text message arrives (the Shortcut's own regex has usually filtered it already).
+//         If it mentions money (₹, Rs, INR — or "debited"/"credited" with a number, which is
+//         how SBI writes it), the stencil reads it straight away as a backup and we hand the
+//         Shortcut a question for Apple's on-device AI. Anything else gets a no-op question.
 // call 2  the AI's answer arrives (a dictionary). Both agree, or only the AI could read it:
 //         saved. They disagree: you're asked. The AI never answers (older iPhone, AI off,
 //         phone locked): the stencil's reading stays, so nothing is lost.
@@ -617,6 +618,8 @@ async function unnotify(id) { try { await Notification.removePending([id]) } cat
 const MONEY_RE = /(?:₹|\brs\.?|\binr)\s*\d|\b(?:debited|credited)\b.{0,40}\d/i
 const SURE_NO = ["a one-time password", "a payment that hasn't happened yet", "a failed payment", "a payment request, not a payment", "a bill reminder", "an offer or ad", "an autopay update, not a payment"]
 const AI_WAIT = 45 // seconds a stencil notification waits for the AI before going out anyway
+// when there's nothing for the AI to read, the Shortcut still runs Use Model — give it a question it can't mistake
+const NOTHING = "Reply with a dictionary: id: none, is_transaction: false, amount: 0."
 
 function aiPrompt(id, sms) {
   return [
@@ -732,7 +735,7 @@ async function capture(param) {
   if (!MONEY_RE.test(text)) {
     await dropStalePending(S, now)
     noteSeen(S, seen, "ignored — no amount in it")
-    return "skip"
+    return NOTHING
   }
   const db = await load(S)
   const p = parseSms(text, now)
@@ -741,7 +744,7 @@ async function capture(param) {
   let result = "asked the AI · stencil: " + (p.ok ? "a payment" : p.why)
   if (p.ok) {
     const row = buildRow(p, db, now, "sms")
-    if (isDup(row, db.rows)) { noteSeen(S, seen, "already had this one"); return "skip" }
+    if (isDup(row, db.rows)) { noteSeen(S, seen, "already had this one"); return NOTHING }
     row.reader = "rules"
     db.rows.push(row)
     pairTransfer(db.rows, row)
@@ -752,7 +755,7 @@ async function capture(param) {
     if (db.settings.notify && msg.notify) { await notify(msg.title, msg.body, later ? "left-" + row.id : null); pend.told = later ? "later" : "now" }
     result = msg.title + " · asked the AI"
   } else if (p.why === "review") {
-    if (db.rows.some(r => r.kind === "review" && r.raw === p.raw)) { noteSeen(S, seen, "already had this one"); return "skip" }
+    if (db.rows.some(r => r.kind === "review" && r.raw === p.raw)) { noteSeen(S, seen, "already had this one"); return NOTHING }
     const row = reviewRow(p, now)
     row.reader = "rules"
     db.rows.push(row)
@@ -770,8 +773,9 @@ async function applyAi(S, ai, now) {
   const pend = await readPending(S)
   // the answer must belong to the message waiting for it (or carry no id and arrive within 5 minutes)
   const norm = s => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "")
-  const fresh = pend && now - new Date(pend.at) < 5 * 60 * 1000
-  const mine = pend && (ai.id ? norm(pend.id).length > 0 && norm(ai.id).includes(norm(pend.id)) : fresh)
+  const fresh = pend && now - new Date(pend.at) < 2 * 60 * 1000
+  const inSms = pend && ai.amount > 0 && (String(pend.sms).match(/\d[\d,]*(?:\.\d+)?/g) || []).map(money).some(n => Math.abs(n - ai.amount) < 0.005)
+  const mine = pend && (ai.id ? norm(pend.id).length > 0 && norm(ai.id).includes(norm(pend.id)) : fresh && inSms)
   if (!mine) {
     noteSeen(S, seen, "an AI answer came with no message waiting")
     return "left.: nothing waiting for the AI"
