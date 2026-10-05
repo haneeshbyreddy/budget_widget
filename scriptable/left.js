@@ -3,17 +3,18 @@
 // icon-color: deep-gray; icon-glyph: wallet;
 
 // left. — how much is left, at a glance.
-// v0.1 · runs only on your iPhone · github.com/haneeshbyreddy/budget_widget
+// v0.2 · runs only on your iPhone · github.com/haneeshbyreddy/budget_widget
 //
 // One script, three jobs:
-//   capture  a Shortcuts automation hands it each new text message.
-//            Bank ones become a row in tape.csv. Everything else is ignored and never saved.
+//   capture  a Shortcuts automation hands it each new text message. Ones that mention money
+//            go to Apple's on-device AI (run by the Shortcut) and come back as a row in
+//            tape.csv. Everything else is ignored and never saved.
 //   widget   home screen + lock screen: TODAY, BAL, FIXED, FREE.
 //   app      tap it in Scriptable: setup, cash spends, fixes, balances, bills.
 //
 // Your data: iCloud Drive › Scriptable › left › tape.csv + settings.json. Nothing leaves your phone.
 
-const VERSION = "0.1.0"
+const VERSION = "0.2.0"
 
 // ─── slots and banks ─────────────────────────────────────────────
 
@@ -45,7 +46,7 @@ const BANKS = [
 ]
 
 const DEFAULTS = { v: 1, payday: 1, accounts: [], bills: [], notify: true, setupAt: null }
-const COLS = ["id", "time", "kind", "amount", "what", "slot", "account", "ref", "bal", "bill", "src", "raw"]
+const COLS = ["id", "time", "kind", "amount", "what", "slot", "account", "ref", "bal", "bill", "src", "raw", "reader", "alt"]
 
 // ─── small helpers ───────────────────────────────────────────────
 
@@ -110,6 +111,7 @@ const REF_RE = /(?:upi\s*(?:ref(?:erence)?)?(?:\s*no\.?)?|ref(?:erence)?\s*(?:no
 const ATM_RE = /\batm\b|cash withdrawal|\bwdl\b|withdrawn/
 const CARDBILL_RE = /credit card (?:bill|payment|dues?)|card (?:bill|payment|dues)\b|\bcc\s*(?:bill|payment|pymt)|towards (?:your )?(?:\w+ )?(?:credit )?card|\bcred\b|bill ?desk.{0,20}card/
 const PROMO_RE = /\b(?:eligible|pre-?approved|offer|apply|loan of|upgrade|congratulations|reward points|voucher|win)\b|limit (?:increase|enhance)/
+const AUTOPAY_RE = /\b(?:e-?)?mandate\b|\bauto-?pay\b|\bauto[\s-]?debit\b|\bn?ach\b|standing instruction/
 
 function ignoreWhy(t) {
   if (/\b(?:will|to|shall)\s+be\s+(?:debited|credited|deducted|charged|paid|reversed|refunded)\b/.test(t)) return "a payment that hasn't happened yet"
@@ -151,7 +153,7 @@ function cleanName(s) {
   if (/^(?:imps|neft|rtgs|upi|ach|nach|ecs|mmt)$/.test(c)) return ""
   if (/^(?:your|you|ur|the|self|mobile|beneficiary|a c|ac|acct|account|bank|card|date)\b/.test(c)) return ""
   if (/\b(?:a c|acct|account|bank)\b/.test(c)) return ""
-  return c.slice(0, 24).trim()
+  return c.length > 24 ? c.slice(0, 25).replace(/\s+\S*$/, "").slice(0, 24).trim() : c
 }
 
 function merchantOf(t, dir) {
@@ -205,6 +207,14 @@ function dateIn(t, now) {
   return dt
 }
 
+// account numbers named anywhere in the SMS (used to spot money moving between your own accounts)
+function mentionedIn(t) {
+  const out = [], all = new RegExp(ACCT_RE.source, "g")
+  let m
+  while ((m = all.exec(t))) out.push(m[1].slice(-4))
+  return out
+}
+
 function parseSms(input, now) {
   now = now || new Date()
   const raw = String(input === null || input === undefined ? "" : input).replace(/\s+/g, " ").trim()
@@ -238,12 +248,8 @@ function parseSms(input, now) {
 
   const bm = t.match(BAL_RE)
   const rm = t.match(REF_RE) || t.match(/upi\/p2[amp]\/(\d{6,})/)
-  const mentioned = []
-  const all = new RegExp(ACCT_RE.source, "g")
-  let mm
-  while ((mm = all.exec(t))) mentioned.push(mm[1].slice(-4))
   return {
-    ok: true, raw, dir, amount, type, account, bank, mentioned,
+    ok: true, raw, dir, amount, type, account, bank, mentioned: mentionedIn(t),
     bal: bm ? money(bm[1]) : null,
     ref: rm ? rm[1] : "",
     what: merchantOf(t, dir),
@@ -251,6 +257,7 @@ function parseSms(input, now) {
     cardBill: CARDBILL_RE.test(t),
     refund: /\brefund(?:ed)?\b|\breversed\b|\breversal\b|cashback/.test(t),
     salary: /\bsalary\b|\bsal\b|payroll/.test(t),
+    autopay: AUTOPAY_RE.test(t),
     date: dateIn(t, now),
   }
 }
@@ -292,7 +299,7 @@ function fromCsv(text) {
     return {
       id: g("id") || newId(), time: new Date(g("time")), kind: g("kind"), amount: num(g("amount")) || 0,
       what: g("what"), slot: g("slot"), account: g("account"), ref: g("ref"), bal: num(g("bal")),
-      bill: g("bill"), src: g("src"), raw: g("raw"),
+      bill: g("bill"), src: g("src"), raw: g("raw"), reader: g("reader"), alt: g("alt"),
     }
   }).filter(r => !isNaN(r.time))
 }
@@ -457,7 +464,7 @@ function buildRow(p, db, now, src) {
     else {
       const bill = matchBill(p, db, time)
       if (bill) { row.kind = "fixed"; row.bill = bill.name; row.slot = "BL"; row.what = row.what || bill.name }
-      else { row.kind = "spend"; row.slot = slotFor(p.what) }
+      else { row.kind = "spend"; row.slot = p.autopay ? "BL" : slotFor(p.what) }
     }
   } else {
     if (p.type === "card") row.kind = p.refund ? "refund" : "cardpay"
@@ -584,18 +591,113 @@ function runURL(q) {
   return "scriptable:///run/" + encodeURIComponent(name) + (q ? "?" + q : "")
 }
 
-async function notify(title, body) {
+async function notify(title, body, laterId) {
   try {
     const N = new Notification()
     N.title = title
     N.body = body
     N.threadIdentifier = "left"
     N.openURL = runURL()
+    // a stencil notification waits a little for the AI's answer, which replaces it
+    if (laterId) { N.identifier = laterId; N.setTriggerDate(new Date(Date.now() + AI_WAIT * 1000)) }
     await N.schedule()
   } catch (e) {}
 }
+async function unnotify(id) { try { await Notification.removePending([id]) } catch (e) {} }
 
-// ─── capture: Shortcuts hands us a text message ──────────────────
+// ─── capture: Shortcuts hands us a text message, then the AI's answer ─
+//
+// call 1  a text message arrives. If it mentions money (₹, Rs, INR — or "debited"/"credited"
+//         with a number, which is how SBI writes it), the stencil reads it straight away and
+//         we hand the Shortcut a question for Apple's on-device AI. Anything else gets "skip".
+// call 2  the AI's answer arrives (a dictionary). Both agree, or only the AI could read it:
+//         saved. They disagree: you're asked. The AI never answers (older iPhone, AI off,
+//         phone locked): the stencil's reading stays, so nothing is lost.
+
+const MONEY_RE = /(?:₹|\brs\.?|\binr)\s*\d|\b(?:debited|credited)\b.{0,40}\d/i
+const SURE_NO = ["a one-time password", "a payment that hasn't happened yet", "a failed payment", "a payment request, not a payment", "a bill reminder", "an offer or ad", "an autopay update, not a payment"]
+const AI_WAIT = 45 // seconds a stencil notification waits for the AI before going out anyway
+
+function aiPrompt(id, sms) {
+  return [
+    "You read one text message for a personal budget app in India. Answer with a dictionary that has exactly these keys:",
+    `id: copy exactly: ${id}`,
+    "is_transaction: true only if money has already moved into or out of the reader's own bank account, card or wallet. false for OTPs, offers, reminders, anything that \"will be\" debited, payment requests, failed payments, autopay set-up, and messages from people.",
+    "direction: \"out\" if money left the reader (debited, sent, spent, paid, withdrawn). \"in\" if money arrived (credited, received, refunded). If the reader's account was debited and someone else was credited, it is \"out\".",
+    "amount: the amount that moved, as a number. Never the balance or the credit limit.",
+    "counterparty: the shop or person on the other side, or \"\".",
+    "account_last4: the last 4 digits of the reader's account or card, or \"\".",
+    "credit_card: true if it happened on a credit card, otherwise false.",
+    "kind: one of purchase, atm, card_bill, refund, salary, autopay, other. card_bill means paying a credit card bill from a bank account.",
+    "balance_after: the available balance after it, as a number, or \"\".",
+    "reference: the UPI or reference number, or \"\".",
+    "",
+    "Message:",
+    sms,
+  ].join("\n")
+}
+
+// the AI's answer, as a dictionary or as text holding JSON → a tidy reading (null if it isn't one)
+function readAi(v) {
+  let o = v
+  if (typeof v === "string") {
+    const m = v.match(/\{[\s\S]*\}/)
+    if (!m) return null
+    try { o = JSON.parse(m[0]) } catch (e) { return null }
+  }
+  if (!o || typeof o !== "object" || Array.isArray(o)) return null
+  const k = {}
+  for (const key of Object.keys(o)) k[key.toLowerCase().replace(/[^a-z0-9]/g, "")] = o[key]
+  if (!("istransaction" in k) || !("amount" in k)) return null
+  const s = x => (x === null || x === undefined ? "" : String(x).trim())
+  const yes = x => x === true || x === 1 || /^(?:true|yes|1)$/i.test(s(x))
+  const d = s(k.direction).toLowerCase()
+  return {
+    id: s(k.id), isTx: yes(k.istransaction),
+    dir: /^(?:in|credit)/.test(d) ? 1 : /^(?:out|debit)/.test(d) ? -1 : 0,
+    amount: num(k.amount), what: cleanName(s(k.counterparty)),
+    last4: s(k.accountlast4).replace(/\D/g, "").slice(-4), card: yes(k.creditcard),
+    kind: s(k.kind).toLowerCase().replace(/[\s-]+/g, "_"), bal: num(k.balanceafter),
+    ref: s(k.reference).replace(/[^a-z0-9]/gi, "").toLowerCase(),
+  }
+}
+
+// safety checks on the AI's numbers: the amount must be in the message, and must not be the balance
+function aiTrusted(a, sms) {
+  if (!a.amount || a.amount <= 0 || !a.dir) return "the AI's answer was incomplete"
+  const near = (xs, v) => xs.some(n => Math.abs(n - v) < 0.005)
+  if (!near((String(sms).match(/\d[\d,]*(?:\.\d+)?/g) || []).map(money), a.amount)) return "the AI's amount isn't in the SMS"
+  const t = String(sms).toLowerCase()
+  const balish = []
+  const re = /(?:bal(?:ance)?|limit|lmt|avl|avail|available|outstanding)[^0-9]{0,24}?(\d[\d,]*(?:\.\d+)?)/g
+  let m
+  while ((m = re.exec(t))) balish.push(money(m[1]))
+  if (near(balish, a.amount) && !near(amountsIn(t), a.amount)) return "the AI picked the balance, not the amount"
+  return null
+}
+
+function aiToParsed(a, sms, now) {
+  const raw = String(sms).replace(/\s+/g, " ").trim(), t = raw.toLowerCase()
+  return {
+    ok: true, raw, dir: a.dir, amount: a.amount, type: a.card ? "card" : "bank",
+    account: a.card ? "card" + a.last4 : (a.last4 || null), bank: bankOf(t), mentioned: mentionedIn(t),
+    bal: a.card ? null : a.bal, ref: a.ref, what: a.what,
+    atm: a.kind === "atm", cardBill: a.kind === "card_bill", refund: a.kind === "refund", salary: a.kind === "salary",
+    autopay: a.kind === "autopay" || AUTOPAY_RE.test(t),
+    date: dateIn(t, now),
+  }
+}
+
+function reading(r) { return { kind: r.kind, amount: r.amount, what: r.what, slot: r.slot, account: r.account, ref: r.ref, bal: r.bal, bill: r.bill } }
+function readingLine(x) { return x.no ? x.no : `${amt(x.amount)} · ${label(x)} (${tag(x)})` }
+function toReview(row, ai, rules) {
+  Object.assign(row, { kind: "review", amount: 0, what: "AI and stencil disagree", slot: "", bill: "", reader: "ask", alt: JSON.stringify({ ai, rules }) })
+}
+function aiActive(s, now) { return !!s.aiSeen && now - new Date(s.aiSeen) < 30 * 864e5 }
+
+async function readPending(S) { try { return JSON.parse((await readFile(S, "pending.json")) || "null") } catch (e) { return null } }
+function dropPending(S) { try { const p = S.path("pending.json"); if (S.fm.fileExists(p)) S.fm.remove(p) } catch (e) {} }
+async function dropStalePending(S, now) { const p = await readPending(S); if (p && now - new Date(p.at) > 10 * 60 * 1000) dropPending(S) }
 
 function inputText(v) {
   if (v === null || v === undefined) return ""
@@ -614,46 +716,140 @@ function inputText(v) {
   return String(v)
 }
 
+function noteSeen(S, seen, result) {
+  seen.result = result
+  try { writeFile(S, "last-seen.json", JSON.stringify(seen)) } catch (e) {}
+}
+
 async function capture(param) {
   const now = new Date()
-  const text = inputText(param)
   const S = store()
-  const p = parseSms(text, now)
+  const ai = readAi(param)
+  if (ai) return applyAi(S, ai, now)
+  const text = inputText(param)
   // privacy: only the time, type and length of a message are noted — never its words
   const seen = { at: iso(now), type: Array.isArray(param) ? "list" : typeof param, chars: text.length, result: "" }
-  let out
-  if (!p.ok && p.why !== "review") {
-    seen.result = "ignored — " + p.why
-    out = "left.: not a bank transaction"
+  if (!MONEY_RE.test(text)) {
+    await dropStalePending(S, now)
+    noteSeen(S, seen, "ignored — no amount in it")
+    return "skip"
+  }
+  const db = await load(S)
+  const p = parseSms(text, now)
+  const later = aiActive(db.settings, now)
+  const pend = { id: newId(), at: iso(now), sms: text, rowId: "", told: "" }
+  let result = "asked the AI · stencil: " + (p.ok ? "a payment" : p.why)
+  if (p.ok) {
+    const row = buildRow(p, db, now, "sms")
+    if (isDup(row, db.rows)) { noteSeen(S, seen, "already had this one"); return "skip" }
+    row.reader = "rules"
+    db.rows.push(row)
+    pairTransfer(db.rows, row)
+    if (learnAccount(db.settings, p, row)) saveSettings(db)
+    saveRows(db)
+    pend.rowId = row.id
+    const msg = describeCapture(row, compute(db.rows, db.settings, now))
+    if (db.settings.notify && msg.notify) { await notify(msg.title, msg.body, later ? "left-" + row.id : null); pend.told = later ? "later" : "now" }
+    result = msg.title + " · asked the AI"
+  } else if (p.why === "review") {
+    if (db.rows.some(r => r.kind === "review" && r.raw === p.raw)) { noteSeen(S, seen, "already had this one"); return "skip" }
+    const row = reviewRow(p, now)
+    row.reader = "rules"
+    db.rows.push(row)
+    saveRows(db)
+    pend.rowId = row.id
+    if (db.settings.notify) { await notify("a bank SMS needs a look", "left. couldn't read it. open left. › recent", later ? "left-" + row.id : null); pend.told = later ? "later" : "now" }
+  }
+  writeFile(S, "pending.json", JSON.stringify(pend))
+  noteSeen(S, seen, result)
+  return aiPrompt(pend.id, text)
+}
+
+async function applyAi(S, ai, now) {
+  const seen = { at: iso(now), type: "AI answer", chars: 0, result: "" }
+  const pend = await readPending(S)
+  // the answer must belong to the message waiting for it (or carry no id and arrive within 5 minutes)
+  const norm = s => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "")
+  const fresh = pend && now - new Date(pend.at) < 5 * 60 * 1000
+  const mine = pend && (ai.id ? norm(pend.id).length > 0 && norm(ai.id).includes(norm(pend.id)) : fresh)
+  if (!mine) {
+    noteSeen(S, seen, "an AI answer came with no message waiting")
+    return "left.: nothing waiting for the AI"
+  }
+  dropPending(S)
+  const db = await load(S)
+  db.settings.aiSeen = iso(now)
+  const sms = pend.sms
+  const raw = String(sms).replace(/\s+/g, " ").trim()
+  const p = parseSms(sms, now)
+  const prov = pend.rowId ? db.rows.find(r => r.id === pend.rowId) : null
+  const live = prov && prov.kind !== "review" ? prov : null // the stencil's confident reading, if any
+  if (prov) await unnotify("left-" + prov.id)
+  let msg = null, result
+  const ask = (row, aiR, rulesR, text) => {
+    toReview(row, aiR, rulesR)
+    msg = { title: "check this one", body: text, notify: true }
+    return "asked you — " + text
+  }
+  const quiet = m => (pend.told === "now" ? null : m) // the stencil already told you, and nothing changed
+
+  if (!ai.isTx) {
+    if (live) result = ask(live, { no: "not a payment" }, reading(live), `AI says it isn't a payment · the stencil read ${readingLine(live)}`)
+    else if (prov) { Object.assign(prov, { kind: "ignore", what: "not a payment (AI)", reader: "ai" }); result = "AI: not a payment" }
+    else result = "AI: not a payment"
   } else {
-    const db = await load(S)
-    if (!p.ok) {
-      if (!db.rows.some(r => r.kind === "review" && r.raw === p.raw)) {
-        db.rows.push(reviewRow(p, now))
-        saveRows(db)
-        if (db.settings.notify) await notify("a bank SMS needs a look", "left. couldn't read it. open left. › recent")
-      }
-      seen.result = "saved for review"
-      out = "left.: saved for review"
-    } else {
-      const row = buildRow(p, db, now, "sms")
-      if (isDup(row, db.rows)) {
-        seen.result = "already had this one"
-        out = "left.: duplicate, skipped"
+    const bad = aiTrusted(ai, sms)
+    if (bad) {
+      if (live) {
+        live.reader = "rules"
+        msg = quiet(describeCapture(live, compute(db.rows, db.settings, now)))
+        result = `${bad} — kept the stencil's reading`
       } else {
+        const row = prov || reviewRow({ raw, account: "" }, now)
+        if (!prov) db.rows.push(row)
+        Object.assign(row, { reader: "ai", alt: JSON.stringify({ ai: { no: bad } }) })
+        msg = { title: "a bank SMS needs a look", body: bad, notify: true }
+        result = bad
+      }
+    } else {
+      const ap = aiToParsed(ai, sms, now)
+      const aiRow = buildRow(ap, db, now, "sms")
+      aiRow.reader = "ai"
+      const isCard = r => (r.account || "").startsWith("card")
+      if (live) {
+        const same = Math.abs(Math.abs(live.amount) - Math.abs(aiRow.amount)) < 0.01 && Math.sign(live.amount) === Math.sign(aiRow.amount) && isCard(live) === isCard(aiRow)
+        if (same) {
+          if (ai.what && live.kind !== "transfer") { live.what = ai.what; if (live.kind === "spend") live.slot = ap.autopay ? "BL" : slotFor(ai.what) }
+          live.reader = "both"
+          msg = quiet(describeCapture(live, compute(db.rows, db.settings, now)))
+          result = "AI and stencil agree"
+        } else result = ask(live, reading(aiRow), reading(live), `AI read ${readingLine(aiRow)} · the stencil read ${readingLine(live)}`)
+      } else if (!p.ok && SURE_NO.includes(p.why)) {
+        const row = reviewRow({ raw, account: aiRow.account }, now)
         db.rows.push(row)
-        pairTransfer(db.rows, row)
-        if (learnAccount(db.settings, p, row)) saveSettings(db)
-        saveRows(db)
-        const msg = describeCapture(row, compute(db.rows, db.settings, now))
-        seen.result = msg.title
-        if (db.settings.notify && msg.notify) await notify(msg.title, msg.body)
-        out = `${msg.title} · ${msg.body}`
+        result = ask(row, reading(aiRow), { no: p.why }, `AI read ${readingLine(aiRow)} · the stencil thinks it's ${p.why}`)
+      } else {
+        // the stencil couldn't read it — the AI's reading is used on its own
+        const others = db.rows.filter(r => r !== prov)
+        if (isDup(aiRow, others)) {
+          db.rows = others
+          result = "already had this one"
+        } else {
+          let target = aiRow
+          if (prov) { const keep = prov.id; Object.assign(prov, aiRow, { id: keep, alt: "" }); target = prov } else db.rows.push(aiRow)
+          pairTransfer(db.rows, target)
+          learnAccount(db.settings, ap, target)
+          msg = describeCapture(target, compute(db.rows, db.settings, now))
+          result = msg.title + " · read by AI"
+        }
       }
     }
   }
-  try { writeFile(S, "last-seen.json", JSON.stringify(seen)) } catch (e) {}
-  return out
+  saveSettings(db)
+  saveRows(db)
+  if (msg && msg.notify && db.settings.notify) await notify(msg.title, msg.body)
+  noteSeen(S, seen, result)
+  return "left.: " + result
 }
 
 // ─── widgets ─────────────────────────────────────────────────────
@@ -1178,18 +1374,27 @@ async function fixRow(S, id) {
   const r = db.rows.find(x => x.id === id)
   if (!r) return
   const card = (r.account || "").startsWith("card")
+  let alt = null
+  try { alt = r.alt ? JSON.parse(r.alt) : null } catch (e) {}
   let opts
-  if (r.kind === "review") opts = [["it was money out", "out"], ["it was money in", "in"], ["show the SMS", "sms"], ["not mine — ignore it", "ignore"]]
+  if (r.kind === "review") {
+    opts = [["it was money out", "out"], ["it was money in", "in"], ["show the SMS", "sms"], ["not mine — ignore it", "ignore"]]
+    if (alt && alt.rules && !alt.rules.no) opts.unshift([`the stencil is right: ${readingLine(alt.rules)}`, "rules"])
+    if (alt && alt.ai && !alt.ai.no) opts.unshift([`AI is right: ${readingLine(alt.ai)}`, "ai"])
+  }
   else if (r.amount < 0 || r.kind === "fixed") opts = [["change slot", "slot"], ["it was a monthly bill", "bill"], ["it paid my credit card bill", "cardbill"], ["moved to my own account", "transfer"], ["it was a normal spend", "spend"], ["show the SMS", "sms"], ["not mine — ignore it", "ignore"]]
   else opts = [["it was income", "income"], ["it was a refund", "refund"], ["came from my own account", "transfer"], ["show the SMS", "sms"], ["not mine — ignore it", "ignore"]]
   if (card) opts = opts.filter(o => !["cardbill", "transfer"].includes(o[1]))
   if (!r.raw) opts = opts.filter(o => o[1] !== "sms")
   opts.push(["delete", "delete"])
-  const i = await choose(`${r.kind === "review" ? "?" : amt(r.amount)} · ${label(r)}`, `${tag(r)} · ${acctLabel(r.account, db.settings)} · ${dmon(r.time).toLowerCase()} ${hm(r.time)}`, opts.map(o => o[0]))
+  const info = r.kind === "review" && r.raw ? r.raw : `${tag(r)} · ${acctLabel(r.account, db.settings)} · ${dmon(r.time).toLowerCase()} ${hm(r.time)}`
+  const i = await choose(`${r.kind === "review" ? "?" : amt(r.amount)} · ${label(r)}`, info, opts.map(o => o[0]))
   if (i < 0) return
   const op = opts[i][1]
   if (op === "sms") return tell("the SMS", r.raw)
-  if (op === "delete") {
+  if (op === "ai" || op === "rules") {
+    Object.assign(r, alt[op], { reader: "you", alt: "" })
+  } else if (op === "delete") {
     const ok = await choose("delete this?", "it'll be gone from tape.csv.", ["delete"], true)
     if (ok !== 0) return
     db.rows = db.rows.filter(x => x.id !== id)
@@ -1230,7 +1435,8 @@ async function recent(S) {
     const rows = db.rows.filter(r => r.kind !== "anchor").sort((a, b) => b.time - a.time).slice(0, 80)
     addRow(t, "recent", rows.length ? "tap one to fix it" : "nothing yet — waiting for your first bank SMS", null, { titleFont: thin(30), height: 70 })
     for (const r of rows) {
-      addRow(t, `${when(r.time, now).toLowerCase()}  ${label(r)}`, `${tag(r)}${r.kind === "fixed" && r.what !== r.bill ? " · " + r.what : ""} · ${acctLabel(r.account, db.settings)}`,
+      const by = r.reader === "ai" ? " · read by AI" : r.reader === "both" ? " · AI agrees" : ""
+      addRow(t, `${when(r.time, now).toLowerCase()}  ${label(r)}`, `${tag(r)}${r.kind === "fixed" && r.what !== r.bill ? " · " + r.what : ""} · ${acctLabel(r.account, db.settings)}${by}`,
         async () => { await fixRow(S, r.id); await draw() },
         { right: r.kind === "review" ? "?" : amt(r.amount), rightColor: r.amount > 0 ? P.free : r.kind === "review" ? P.today : null, titleFont: Font.regularSystemFont(15) })
     }
@@ -1372,8 +1578,10 @@ async function settingsScreen(S) {
     }, { right: db.settings.notify ? "on" : "off" })
     const seenLine = seen ? `${dmon(new Date(seen.at)).toLowerCase()} ${hm(new Date(seen.at))} · ${seen.result}` : "nothing yet — the shortcut hasn't run"
     addRow(t, "last message the shortcut sent", seenLine, async () => {
-      await tell("last message", seen ? `when: ${dmon(new Date(seen.at)).toLowerCase()} ${hm(new Date(seen.at))}\narrived as: ${seen.type}, ${seen.chars} characters\nresult: ${seen.result}\n\nleft. never keeps the words of messages that aren't bank transactions.` : "the shortcut hasn't run yet. set it up, then wait for any text message.")
+      await tell("last message", seen ? `when: ${dmon(new Date(seen.at)).toLowerCase()} ${hm(new Date(seen.at))}\narrived as: ${seen.type}, ${seen.chars} characters\nresult: ${seen.result}\n\nleft. doesn't keep the words of messages that aren't bank transactions.` : "the shortcut hasn't run yet. set it up, then wait for any text message.")
     }, { height: 64 })
+    const ai = db.settings.aiSeen ? new Date(db.settings.aiSeen) : null
+    addRow(t, "AI reader", ai ? `last answered ${dmon(ai).toLowerCase()} ${hm(ai)}` : "not set up yet — the stencil reads everything", null, { height: 60 })
     addRow(t, "your data", "iCloud Drive › Scriptable › left › tape.csv", null, { height: 60 })
     t.reload()
   }
@@ -1446,6 +1654,7 @@ async function home(S) {
 
 async function app(action) {
   const S = store()
+  await dropStalePending(S, new Date())
   const db = await load(S)
   if (!db.settings.setupAt && !(await setup(S))) return
   if (action === "spend") await addSpend(S)
@@ -1468,7 +1677,7 @@ async function main() {
 }
 
 if (typeof __LEFT_TEST__ !== "undefined" && __LEFT_TEST__) {
-  __LEFT_TEST__.exports = { parseSms, compute, cycleFor, buildRow, isDup, pairTransfer, slotFor, toCsv, fromCsv, group, inr, compact, balanceAt, anchorRow }
+  __LEFT_TEST__.exports = { parseSms, compute, cycleFor, buildRow, isDup, pairTransfer, slotFor, toCsv, fromCsv, group, inr, compact, balanceAt, anchorRow, readAi, aiTrusted, aiPrompt, MONEY_RE }
 } else {
   await main()
   Script.complete()

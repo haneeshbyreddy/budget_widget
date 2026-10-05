@@ -24,7 +24,7 @@ The widget answers one question before you pay: *can I afford this today?* Cycle
 
 Every night the shortcut re-sends `tape.csv`; anything the server has already seen is ignored.
 
-The v0 skips the server: one Scriptable script reads each SMS on the phone, writes `tape.csv` and draws the widget.
+The v0 skips the server: one Scriptable script filters texts that mention money, hands them to Apple's on-device AI (run by the Shortcut) to read, double-checks the answer, writes `tape.csv` and draws the widget.
 
 ## What's in this repo
 
