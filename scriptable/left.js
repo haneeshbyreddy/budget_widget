@@ -3,18 +3,18 @@
 // icon-color: deep-gray; icon-glyph: wallet;
 
 // left. — how much is left, at a glance.
-// v0.2 · runs only on your iPhone · github.com/haneeshbyreddy/budget_widget
+// v0.3 · runs only on your iPhone · github.com/haneeshbyreddy/budget_widget
 //
 // One script, three jobs:
-//   capture  a Shortcuts automation hands it each new text message. Ones that mention money
-//            go to Apple's on-device AI (run by the Shortcut) and come back as a row in
-//            tape.csv. Everything else is ignored and never saved.
+//   capture  a Shortcuts automation filters money texts with its triggers, Apple's on-device
+//            AI reads each one, and left. saves the AI's answer as a row in tape.csv.
+//            (Older two-step Shortcuts that hand over the text itself still work too.)
 //   widget   home screen + lock screen: TODAY, BAL, FIXED, FREE.
 //   app      tap it in Scriptable: setup, cash spends, fixes, balances, bills.
 //
 // Your data: iCloud Drive › Scriptable › left › tape.csv + settings.json. Nothing leaves your phone.
 
-const VERSION = "0.2.0"
+const VERSION = "0.3.0"
 
 // ─── slots and banks ─────────────────────────────────────────────
 
@@ -61,7 +61,7 @@ const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2
 
 function num(s) {
   if (s === null || s === undefined || s === "") return null
-  const v = parseFloat(String(s).replace(/[,₹\s]/g, "").replace(/^rs\.?/i, ""))
+  const v = parseFloat(String(s).replace(/[,₹\s]/g, "").replace(/^(?:rs\.?|inr)/i, ""))
   return isNaN(v) ? null : v
 }
 function money(s) { return parseFloat(String(s).replace(/,/g, "")) }
@@ -440,7 +440,7 @@ function matchBill(p, db, time) {
   if (!s.bills || !s.bills.length) return null
   const cyc = cycleFor(time, s.payday)
   const paid = name => db.rows.some(r => r.kind === "fixed" && r.bill === name && r.time >= cyc.start)
-  const raw = p.raw.toLowerCase()
+  const raw = (p.raw + " " + (p.what || "")).toLowerCase()
   // a bill is spotted by a word from its SMS (any day), or by its exact amount within a week of its due date
   const near = b => Math.abs(daysBetween(dueIn(b, cyc), time)) <= 7
   const cands = s.bills.filter(b => !paid(b.name) && ((b.match && raw.includes(String(b.match).toLowerCase())) || (Math.abs(b.amount - p.amount) <= 1 && near(b))))
@@ -645,8 +645,15 @@ function readAi(v) {
   let o = v
   if (typeof v === "string") {
     const m = v.match(/\{[\s\S]*\}/)
-    if (!m) return null
-    try { o = JSON.parse(m[0]) } catch (e) { return null }
+    if (m) { try { o = JSON.parse(m[0]) } catch (e) { return null } }
+    else {
+      // plain "key: value" lines, in case the model's Output was left on Text
+      o = {}
+      for (const line of v.split(/\n/)) {
+        const kv = line.match(/^\s*[-*•]?\s*"?([A-Za-z_ ]{2,20}?)"?\s*[:=]\s*(.*?)\s*,?\s*$/)
+        if (kv) o[kv[1]] = kv[2].replace(/^"(.*)"$/, "$1")
+      }
+    }
   }
   if (!o || typeof o !== "object" || Array.isArray(o)) return null
   const k = {}
@@ -774,7 +781,15 @@ async function capture(param) {
     if (f.done) { noteSeen(S, seen, f.done); return "left.: " + f.done }
     return applyAi(S, ai, now, f.pend)
   }
-  if (ai) return applyAi(S, ai, now)
+  if (ai) {
+    // simple Shortcut: triggers filter → Use Model → Run Script with only the AI's answer. Trust it.
+    if (!ai.id) {
+      const pend = await readPending(S)
+      const waiting = pend && now - new Date(pend.at) < 2 * 60 * 1000
+      if (!waiting) return saveAi(S, ai, now)
+    }
+    return applyAi(S, ai, now)
+  }
   // two runs: a text message arrives first, the AI's answer comes in a second run
   const text = inputText(param)
   // privacy: only the time, type and length of a message are noted — never its words
@@ -788,6 +803,31 @@ async function capture(param) {
   writeFile(S, "pending.json", JSON.stringify(f.pend))
   noteSeen(S, seen, f.result)
   return aiPrompt(f.pend.id, text)
+}
+
+// the simple path: the AI's answer is the whole story — no text, no second opinion
+async function saveAi(S, ai, now) {
+  const seen = { at: iso(now), type: "AI answer", chars: 0, result: "" }
+  const done = r => { noteSeen(S, seen, r); return "left.: " + r }
+  if (!ai.isTx) return done("not a payment (AI)")
+  // fill small gaps: a minus sign or the kind can say which way the money went
+  const byKind = { refund: 1, salary: 1, purchase: -1, atm: -1, card_bill: -1, autopay: -1 }
+  ai = Object.assign({}, ai, { dir: ai.dir || (ai.amount < 0 ? -1 : byKind[ai.kind] || 0), amount: Math.abs(ai.amount || 0) })
+  if (!(ai.amount > 0) || !ai.dir) return done("the AI's answer was incomplete")
+  const db = await load(S)
+  db.settings.aiSeen = iso(now)
+  const ap = aiToParsed(ai, "", now)
+  const row = buildRow(ap, db, now, "sms")
+  row.reader = "ai"
+  if (isDup(row, db.rows)) { saveSettings(db); return done("already had this one") }
+  db.rows.push(row)
+  pairTransfer(db.rows, row)
+  learnAccount(db.settings, ap, row)
+  saveSettings(db)
+  saveRows(db)
+  const msg = describeCapture(row, compute(db.rows, db.settings, now))
+  if (db.settings.notify && msg.notify) await notify(msg.title, msg.body)
+  return done(msg.title)
 }
 
 async function applyAi(S, ai, now, given) {
