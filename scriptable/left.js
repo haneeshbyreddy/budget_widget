@@ -113,6 +113,10 @@ const PROMO_RE = /\b(?:eligible|pre-?approved|offer|apply|loan of|upgrade|congra
 
 function ignoreWhy(t) {
   if (/\b(?:will|to|shall)\s+be\s+(?:debited|credited|deducted|charged|paid|reversed|refunded)\b/.test(t)) return "a payment that hasn't happened yet"
+  // autopay (UPI mandate) notices: the reminder before a debit, and set-up / cancel messages
+  const done = PAST_RE.test(t) || /\bsent\s*(?:rs|inr|₹)/.test(t)
+  if (!done && /\b(?:upcoming|scheduled|pre-?debit|pre-?notification)\b/.test(t)) return "a payment that hasn't happened yet"
+  if (!done && /\bmandate\b/.test(t) && /\b(?:created|registered|set ?up|approved|authori[sz]ed|revoked|cancell?ed|paused|resumed|modified|updated|declined|expired)\b/.test(t)) return "an autopay update, not a payment"
   if (/\botp\b|one[\s-]?time password|verification code/.test(t) && !PAST_RE.test(t)) return "a one-time password"
   if ((/\b(?:failed|declined|unsuccessful|insufficient)\b|not successful|could not be processed/.test(t)) && !/\b(?:reversed|refunded|refund|credited)\b/.test(t)) return "a failed payment"
   if (/\bhas requested\b|\brequested you\b|collect request|payment request|\brequesting\b/.test(t)) return "a payment request, not a payment"
@@ -151,7 +155,8 @@ function cleanName(s) {
 }
 
 function merchantOf(t, dir) {
-  const stop = "(?=\\s+(?:on|via|ref|refno|upi|txn|from|for|dated|date|not|avl|avail|info|at|in|using|with|is|has|and|thru|through)\\b|[.,;:(]|$)"
+  // a name ends at a joining word, at punctuation, or where a date starts ("To AXIO 05/10/26")
+  const stop = "(?=\\s+(?:on|via|ref|refno|upi|txn|from|for|dated|date|not|avl|avail|info|at|in|using|with|is|has|and|thru|through)\\b|\\s+\\d{1,2}[-\\/.](?:\\d{1,2}|[a-z]{3})|[.,;:(]|$)"
   const name = "([a-z][a-z0-9 .&'@_\\-]{1,40}?)"
   const info = () => {
     const m = t.match(/info[:\s-]+([a-z0-9 \/\-_.@*]{2,60})/)
