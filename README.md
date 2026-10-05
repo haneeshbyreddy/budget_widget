@@ -2,7 +2,7 @@
 
 An iPhone widget that shows how much money is left and how much you can spend **today**, filled in automatically from bank SMS. A website handles everything else: adding funds, fixing missed payments, fixed bills and analytics.
 
-Working name: **left.** · Stage: brainstorm and design, no app code yet.
+Working name: **left.** · Stage: iPhone-only v0 script, not yet tried on a real phone.
 
 ## The idea
 
@@ -24,13 +24,16 @@ The widget answers one question before you pay: *can I afford this today?* Cycle
 
 Every night the shortcut re-sends `tape.csv`; anything the server has already seen is ignored.
 
+The v0 skips the server: one Scriptable script reads each SMS on the phone, writes `tape.csv` and draws the widget.
+
 ## What's in this repo
 
 | path | what |
 | --- | --- |
 | [`docs/brainstorm.md`](docs/brainstorm.md) | the plan: the four numbers, SMS capture with Shortcuts, the website, the widget, design direction, risks, next step |
 | [`design/`](design/) | the design board: system sheet, widgets, system map, web console, setup guide, quick-add keypad, plus tokens |
+| [`scriptable/left.js`](scriptable/left.js) | the v0 script for Scriptable on iPhone: reads bank SMS from a Shortcuts automation, keeps `tape.csv` in iCloud Drive, draws the home and lock screen widgets, and runs setup and fixes in the app |
 
 ## Next step
 
-A v0 for one person: the capture shortcut, two server endpoints (capture and widget), a Scriptable widget, and an import of the existing `payments.txt` history.
+Try `left.js` on a real iPhone, then import the existing `payments.txt` history. The server and website come after.
