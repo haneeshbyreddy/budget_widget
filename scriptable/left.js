@@ -621,8 +621,8 @@ const AI_WAIT = 45 // seconds a stencil notification waits for the AI before goi
 // when there's nothing for the AI to read, the Shortcut still runs Use Model — give it a question it can't mistake
 const NOTHING = "Reply with a dictionary: id: none, is_transaction: false, amount: 0."
 
-// the instructions the AI follows. In the one-run Shortcut you type these into Use Model yourself
-// (they're in scriptable/prompt.txt); in the two-run Shortcut left. writes them, plus an id.
+// the long instructions older Shortcuts use: the two-run Shortcut has left. write them (plus an id).
+// The simple Shortcut uses the short prompt in scriptable/prompt.txt (type, amount, name, account, card).
 const AI_RULES = [
   "You read one text message for a personal budget app in India. Answer with a dictionary that has exactly these keys:",
   "is_transaction: true only if money has already moved into or out of the reader's own bank account, card or wallet. false for OTPs, offers, reminders, anything that \"will be\" debited, payment requests, failed payments, autopay set-up, and messages from people.",
@@ -658,19 +658,39 @@ function readAi(v) {
   if (!o || typeof o !== "object" || Array.isArray(o)) return null
   const k = {}
   for (const key of Object.keys(o)) k[key.toLowerCase().replace(/[^a-z0-9]/g, "")] = o[key]
-  if (!("istransaction" in k) || !("amount" in k)) return null
   const s = x => (x === null || x === undefined ? "" : String(x).trim())
   const yes = x => x === true || x === 1 || /^(?:true|yes|1)$/i.test(s(x))
+  const first = (...keys) => { for (const x of keys) if (s(k[x])) return s(k[x]); return "" }
+  // short prompt: one "type" word says if, and which way, money moved
+  const t = typeOfAi(s(k.type))
+  if ((!t && !("istransaction" in k)) || !("amount" in k)) return null
   const d = s(k.direction).toLowerCase()
+  const kind = t ? t.kind : s(k.kind).toLowerCase().replace(/[\s-]+/g, "_")
   return {
-    id: s(k.id), isTx: yes(k.istransaction),
-    dir: /^(?:in|credit)/.test(d) ? 1 : /^(?:out|debit)/.test(d) ? -1 : 0,
-    amount: num(k.amount), what: cleanName(s(k.counterparty)),
-    last4: s(k.accountlast4).replace(/\D/g, "").slice(-4), card: yes(k.creditcard),
-    kind: s(k.kind).toLowerCase().replace(/[\s-]+/g, "_"), bal: num(k.balanceafter),
+    id: s(k.id), isTx: t ? t.isTx : yes(k.istransaction),
+    dir: t ? t.dir : /^(?:in|credit)/.test(d) ? 1 : /^(?:out|debit)/.test(d) ? -1 : 0,
+    amount: num(k.amount), what: cleanName(first("counterparty", "name")),
+    last4: first("accountlast4", "account").replace(/\D/g, "").slice(-4),
+    card: kind !== "atm" && yes(k.creditcard !== undefined ? k.creditcard : k.card), // cash comes out of the bank
+    kind, bal: num(k.balanceafter),
     ref: s(k.reference).replace(/[^a-z0-9]/gi, "").toLowerCase(),
     sms: inputText(k.message !== undefined ? k.message : k.sms !== undefined ? k.sms : k.shortcutinput),
   }
+}
+
+// the short prompt's type word → { isTx, dir, kind } (null if it isn't one we know)
+function typeOfAi(v) {
+  const t = String(v || "").toLowerCase().replace(/[\s-]+/g, "_")
+  if (!t) return null
+  const r = (isTx, dir, kind) => ({ isTx, dir, kind })
+  if (/^(?:none|no|null|n\/?a|not|nothing)\b/.test(t)) return r(false, 0, "")
+  if (/card_?bill|bill_?payment/.test(t)) return r(true, -1, "card_bill")
+  if (/refund|reversal|reversed/.test(t)) return r(true, 1, "refund")
+  if (/salary/.test(t)) return r(true, 1, "salary")
+  if (/^(?:atm|withdraw)/.test(t)) return r(true, -1, "atm")
+  if (/^(?:spent|spend|sent|paid|pay|debit|purchase|out|autopay)/.test(t)) return r(true, -1, /autopay/.test(t) ? "autopay" : "purchase")
+  if (/^(?:received|receive|credit|in\b|deposit|income)/.test(t)) return r(true, 1, "other")
+  return null
 }
 
 // safety checks on the AI's numbers: the amount must be in the message, and must not be the balance
@@ -816,6 +836,12 @@ async function saveAi(S, ai, now) {
   if (!(ai.amount > 0) || !ai.dir) return done("the AI's answer was incomplete")
   const db = await load(S)
   db.settings.aiSeen = iso(now)
+  if (ai.kind === "card_bill") {
+    // paid from one of your bank accounts → the bank side; on an account that isn't a bank of yours →
+    // it's the card company's "payment received" text, so it lowers what the card owes
+    const fromBank = !ai.last4 || (db.settings.accounts || []).some(a => sameBank(a.id, ai.last4))
+    ai = Object.assign(ai, fromBank ? { card: false, dir: -1 } : { card: true, dir: 1, kind: "other" })
+  }
   const ap = aiToParsed(ai, "", now)
   const row = buildRow(ap, db, now, "sms")
   row.reader = "ai"

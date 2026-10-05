@@ -1,12 +1,10 @@
-You read one text message for a personal budget app in India. Answer with a dictionary that has exactly these keys:
-is_transaction: true only if money has already moved into or out of the reader's own bank account, card or wallet. false for OTPs, offers, reminders, anything that "will be" debited, payment requests, failed payments, autopay set-up, and messages from people.
-direction: "out" if money left the reader (debited, sent, spent, paid, withdrawn). "in" if money arrived (credited, received, refunded). If the reader's account was debited and someone else was credited, it is "out".
-amount: the amount that moved, as a number. Never the balance or the credit limit.
-counterparty: the shop or person on the other side, or "".
-account_last4: the last 4 digits of the reader's account or card, or "".
-credit_card: true if it happened on a credit card, otherwise false.
-kind: one of purchase, atm, card_bill, refund, salary, autopay, other. card_bill means paying a credit card bill from a bank account.
-balance_after: the available balance after it, as a number, or "".
-reference: the UPI or reference number, or "".
+Read this bank SMS and fill in:
+type: spent, received, refund, atm, card_bill or none
+amount: the amount, as a number
+name: the shop or person
+account: last 4 digits of the account or card
+card: true if a credit card was used, else false
+
+Use none for OTPs, offers and payments that will happen later. card_bill means paying a credit card bill from a bank account.
 
 Message:
