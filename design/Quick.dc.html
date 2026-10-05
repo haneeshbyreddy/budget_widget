@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>left. quick add</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..700&amp;family=DM+Mono:wght@300;400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#0E0E10}a:hover{color:#B93A0B}
+.a{font-family:'Archivo',ui-sans-serif,-apple-system,'Helvetica Neue',Helvetica,sans-serif}
+.m{font-family:'DM Mono',ui-monospace,'SF Mono',Menlo,monospace}
+.lbl{font-family:'DM Mono',ui-monospace,'SF Mono',Menlo,monospace;font-size:11px;line-height:16px;letter-spacing:.08em;text-transform:uppercase}
+</style>
+</helmet>
+<div class="a" style="width: 390px; height: 844px; box-sizing: border-box; padding: 20px; background: #F2F2EF; color: #0E0E10; display: flex; flex-direction: column; gap: 16px">
+
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
+<span class="m" style="font-size: 13px; color: #4A4A47">/log</span>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid #0E0E10">
+<sc-for list="{{modes}}" as="md" hint-placeholder-count="2">
+<button type="button" class="m" onClick="{{md.pick}}" aria-pressed="{{md.pressed}}" style="height: 44px; min-width: 92px; border: 0; border-radius: 0; background: {{md.bg}}; color: {{md.fg}}; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer">{{md.label}}</button>
+</sc-for>
+</div>
+<button type="button" aria-label="close" style="width: 44px; height: 44px; border: 1px solid #0E0E10; border-radius: 0; background: transparent; display: flex; align-items: center; justify-content: center; cursor: pointer"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="#0E0E10" stroke-width="1.5"><path d="M2 2 L14 14 M14 2 L2 14"></path></svg></button>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 6px; padding-top: 12px; border-top: 2px solid #0E0E10">
+<div style="display: flex; justify-content: space-between"><span class="lbl">{{modeLabel}}</span><span class="lbl" style="color: #4A4A47">cash · today 14:05</span></div>
+<div style="display: flex; align-items: flex-start; justify-content: flex-end; gap: 6px; color: {{amtColor}}">
+<span class="m" style="font-size: 28px; line-height: 1; padding-top: 12px">₹</span>
+<span style="font-size: {{amtSize}}; line-height: 0.9; font-weight: 200; font-stretch: 112%; letter-spacing: -0.04em; white-space: nowrap">{{amtFmt}}</span>
+</div>
+<sc-if value="{{hasLast}}" hint-placeholder-val="{{false}}">
+<div style="display: flex; align-items: center; gap: 8px"><span style="width: 8px; height: 8px; border-radius: 4px; background: #F2541B; display: inline-block; flex: none"></span><span class="m" style="font-size: 12px; line-height: 16px; color: #4A4A47">{{last}}</span></div>
+</sc-if>
+</div>
+
+<div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px">
+<sc-for list="{{cats}}" as="c" hint-placeholder-count="8">
+<button type="button" onClick="{{c.pick}}" aria-pressed="{{c.pressed}}" style="height: 44px; border: 1px solid #0E0E10; border-radius: 0; background: {{c.bg}}; color: {{c.fg}}; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; cursor: pointer; font-family: inherit"><span class="m" style="font-size: 12px; letter-spacing: 0.08em">{{c.code}}</span><span style="font-size: 10px">{{c.name}}</span></button>
+</sc-for>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 4px">
+<label class="lbl" for="note" style="color: #4A4A47">note</label>
+<input id="note" type="text" placeholder="what was it? e.g. chai + samosa" style="height: 44px; box-sizing: border-box; padding: 0; border: 0; border-bottom: 1px solid #0E0E10; border-radius: 0; background: transparent; color: #0E0E10; font-family: inherit; font-size: 16px">
+</div>
+
+<div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px">
+<sc-for list="{{keys}}" as="k" hint-placeholder-count="12">
+<button type="button" class="m" onClick="{{k.press}}" aria-label="{{k.aria}}" style="height: 62px; border: 1px solid #0E0E10; border-radius: 0; background: #FCFCFA; color: #0E0E10; font-size: {{k.size}}; letter-spacing: 0.04em; cursor: pointer">{{k.label}}</button>
+</sc-for>
+</div>
+
+<button type="button" class="m" onClick="{{log}}" style="height: 60px; border: 0; border-radius: 0; background: {{logBg}}; color: {{logFg}}; font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer">{{logLabel}}</button>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  cur() {
+    var s = this.state || {};
+    return {
+      amt: typeof s.amt === 'string' ? s.amt : '120',
+      cat: s.cat || 'FD',
+      mode: s.mode || 'spend',
+      last: s.last || ''
+    };
+  }
+  fmt(s) {
+    var n = (s || '').replace(/^0+(?=\d)/, '');
+    if (!n) return '0';
+    if (n.length <= 3) return n;
+    var last3 = n.slice(-3);
+    var rest = n.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ',');
+    return rest + ',' + last3;
+  }
+  press(k) {
+    var a = this.cur().amt;
+    if (k === 'del') {
+      a = a.slice(0, -1);
+    } else if (k === '00') {
+      if (a && a !== '0') a = a + '00';
+    } else {
+      a = (a === '0' ? '' : a) + k;
+    }
+    if (a.length > 7) return;
+    this.setState({ amt: a, last: '' });
+  }
+  renderVals() {
+    var self = this;
+    var st = this.cur();
+    var isSpend = st.mode === 'spend';
+    var spendCats = [['FD', 'food'], ['TR', 'travel'], ['BL', 'bills'], ['SH', 'shop'], ['HM', 'home'], ['FN', 'fun'], ['HL', 'health'], ['OT', 'other']];
+    var fundCats = [['SAL', 'salary'], ['REF', 'refund'], ['CSH', 'cash in'], ['OTH', 'other']];
+    var list = isSpend ? spendCats : fundCats;
+    var cat = st.cat;
+    var known = false;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i][0] === cat) known = true;
+    }
+    if (!known) cat = list[0][0];
+    var cats = list.map(function (c) {
+      var on = c[0] === cat;
+      return {
+        code: c[0],
+        name: c[1],
+        pressed: on,
+        bg: on ? '#0E0E10' : '#FCFCFA',
+        fg: on ? '#F2F2EF' : '#0E0E10',
+        pick: function () { self.setState({ cat: c[0] }); }
+      };
+    });
+    var modes = [['spend', 'spend'], ['funds', 'funds']].map(function (m) {
+      var on = st.mode === m[0];
+      return {
+        label: m[1],
+        pressed: on,
+        bg: on ? '#0E0E10' : 'transparent',
+        fg: on ? '#F2F2EF' : '#0E0E10',
+        pick: function () { self.setState({ mode: m[0], cat: m[0] === 'spend' ? 'FD' : 'SAL', last: '' }); }
+      };
+    });
+    var keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '00', '0', 'del'].map(function (k) {
+      return {
+        label: k === 'del' ? 'DEL' : k,
+        aria: k === 'del' ? 'delete last digit' : k,
+        size: k === 'del' ? '13px' : '24px',
+        press: function () { self.press(k); }
+      };
+    });
+    var amtFmt = this.fmt(st.amt);
+    var sizes = { 6: '76px', 7: '66px', 8: '58px', 9: '52px' };
+    var amtSize = amtFmt.length <= 5 ? '88px' : (sizes[amtFmt.length] || '52px');
+    return {
+      amtSize: amtSize,
+      modes: modes,
+      cats: cats,
+      keys: keys,
+      amtFmt: amtFmt,
+      modeLabel: isSpend ? 'spend' : 'funds in',
+      amtColor: isSpend ? '#0E0E10' : '#1E7A47',
+      hasLast: st.last !== '',
+      last: st.last,
+      logBg: isSpend ? '#F2541B' : '#0E0E10',
+      logFg: isSpend ? '#0E0E10' : '#F2F2EF',
+      logLabel: (isSpend ? 'log −₹' : 'add +₹') + amtFmt,
+      log: function () {
+        if (!st.amt || st.amt === '0') return;
+        self.setState({
+          amt: '',
+          last: (isSpend ? 'logged −₹' : 'added +₹') + amtFmt + ' · ' + cat + ' · today’s number updated'
+        });
+      }
+    };
+  }
+}
+</script>
+</body>
+</html>

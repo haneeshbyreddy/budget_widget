@@ -1,0 +1,86 @@
+{
+  "v": 3,
+  "attachments": {},
+  "boards": {
+    "Console.dc.html": {
+      "expand": "fill",
+      "h": 1400,
+      "title": "03 · console (web)",
+      "w": 1440,
+      "x": 1520,
+      "y": 2380
+    },
+    "Guide.dc.html": {
+      "h": 2000,
+      "title": "04 · setup field guide",
+      "w": 390,
+      "x": 3040,
+      "y": 2380
+    },
+    "Main.dc.html": {
+      "h": 2000,
+      "title": "00 · system sheet",
+      "w": 1440,
+      "x": 0,
+      "y": 0
+    },
+    "Map.dc.html": {
+      "h": 720,
+      "title": "02 · system map",
+      "w": 1440,
+      "x": 0,
+      "y": 2380
+    },
+    "Quick.dc.html": {
+      "h": 844,
+      "is_interactive": true,
+      "title": "05 · quick add",
+      "w": 390,
+      "x": 3510,
+      "y": 2380
+    },
+    "Widgets.dc.html": {
+      "h": 1440,
+      "title": "01 · widgets",
+      "w": 2020,
+      "x": 1520,
+      "y": 0
+    }
+  },
+  "createdOnFiles": {
+    "at": "2026-10-04T15:40:00Z",
+    "v": 1
+  },
+  "designSystems": [],
+  "launch": {
+    "view": "canvas"
+  },
+  "notes": {
+    "row1": {
+      "kind": "title1",
+      "maxW": 3540,
+      "text": "left. — system & widgets",
+      "w": 240,
+      "x": 0,
+      "y": -300
+    },
+    "row2": {
+      "kind": "title1",
+      "maxW": 3900,
+      "text": "left. — flows & screens",
+      "w": 240,
+      "x": 0,
+      "y": 2080
+    }
+  },
+  "order": [
+    "Main.dc.html",
+    "Widgets.dc.html",
+    "Map.dc.html",
+    "Console.dc.html",
+    "Guide.dc.html",
+    "Quick.dc.html"
+  ],
+  "pages": [],
+  "title": "left. design board"
+}
